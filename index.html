@@ -3,6 +3,12 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0f4c81">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Peças Motor VCG">
 <title>VCG · Solicitação de Peças do Motor — Alpha 0.2</title>
 
 <style>
@@ -3557,4 +3563,14 @@ document.addEventListener('keydown',function(e){ if(e.key==='Escape'){ abre(fals
 </script>
 
 
+<script>
+/* ---------- PWA: registro do service worker ---------- */
+if('serviceWorker' in navigator){
+  window.addEventListener('load', function(){
+    navigator.serviceWorker.register('service-worker.js').catch(function(e){
+      console.warn('Falha ao registrar service worker:', e);
+    });
+  });
+}
+</script>
 </body></html>
