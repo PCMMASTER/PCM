@@ -483,8 +483,6 @@ body.admin-on .ed:focus{outline:2px solid var(--brand);outline-offset:2px;backgr
 #pr .bh2{background:#2C2D6B;color:#fff;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.7px;padding:5px 8px;margin:0 0 6px}
 #pr .bh2.ret{background:#4A2A73;margin-top:14px}
 #pr .ret-av{border:1px solid #4A2A73;background:#F4EFFB;padding:5px 8px;font-size:9.5px;margin-top:6px}
-#pr .sg2{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-top:22px}
-#pr .sg2 div{border-top:1px solid #000;padding-top:4px;text-align:center;font-size:10px}
 #pr .fp{margin-top:14px;font-size:9px;color:#555;border-top:1px solid #bbb;padding-top:5px}
 
 /* ===================== MODO EDIÇÃO / PERSONALIZAÇÃO (PCM) ===================== */
@@ -1460,10 +1458,12 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 </script>
 <!-- gerador de XLSX da requisição (sem depender de nenhuma biblioteca externa) -->
 <script>
-/* minixlsx.js — gerador mínimo de .xlsx sem dependências, pensado pra rodar
+/* minixlsx.js v2 — gerador mínimo de .xlsx sem dependências, pensado pra rodar
  * tanto em Node (teste) quanto dentro do navegador/WebView (produção).
- * Produz um workbook simples: 1 aba, células com valor/estilo básico
- * (negrito, tamanho, cor de fundo, largura de coluna, mesclagem de células).
+ * 1 aba, com: negrito/itálico/tamanho/cor, preenchimento, bordas por lado,
+ * alinhamento horizontal/vertical, quebra de linha, texto com vários estilos na
+ * mesma célula, mesclagem, largura de coluna, altura de linha, imagem (PNG),
+ * área de impressão e ajuste de página (A4, caber na largura/altura).
  */
 (function(root){
   function crc32(bytes){
@@ -1483,7 +1483,6 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
 
   function strToBytes(str){
     if (typeof TextEncoder !== 'undefined') return new TextEncoder().encode(str);
-    // fallback simples (Node antigo / ambientes sem TextEncoder)
     var bytes = [];
     for (var i = 0; i < str.length; i++){
       var c = str.charCodeAt(i);
@@ -1497,14 +1496,13 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
   function u16(v){ return [v & 0xFF, (v>>>8) & 0xFF]; }
   function u32(v){ return [v & 0xFF, (v>>>8) & 0xFF, (v>>>16) & 0xFF, (v>>>24) & 0xFF]; }
 
-  // Empacota um conjunto de {name, content(string)} em um .zip "stored" (sem compressão),
-  // formato válido de ZIP mínimo o bastante pro Excel/Sheets/LibreOffice abrirem um .xlsx.
+  // Empacota {name, content(string ou Uint8Array)} em .zip "stored" (sem compressão).
   function zipStore(files){
     var chunks = [], centralChunks = [];
     var offset = 0;
     files.forEach(function(f){
       var nameBytes = strToBytes(f.name);
-      var dataBytes = strToBytes(f.content);
+      var dataBytes = (typeof f.content === 'string') ? strToBytes(f.content) : f.content;
       var crc = crc32(dataBytes);
       var localHeader = [].concat(
         u32(0x04034b50), u16(20), u16(0), u16(0), u16(0), u16(0),
@@ -1555,11 +1553,20 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     while(x>0){ var m=(x-1)%26; s=String.fromCharCode(65+m)+s; x=Math.floor((x-1)/26); }
     return s;
   }
+  function fontXml(f){
+    return '<font>'+(f.bold?'<b/>':'')+(f.italic?'<i/>':'')+'<sz val="'+f.size+'"/>'+
+      (f.color?'<color rgb="'+f.color+'"/>':'<color theme="1"/>')+'<name val="Calibri"/><family val="2"/></font>';
+  }
 
-  /* API pública: MiniXLSX.build({
-   *   sheetName, colWidths:[n,...],
-   *   merges:['A1:D1', ...],
-   *   rows:[ { h: altura_opcional, cells:[ {v: valor, bold, size, fill, align, italic, colSpanDummy}, ... ] }, ... ]
+  /* MiniXLSX.build({
+   *   sheetName, colWidths:[n,...], merges:['A1:D1',...],
+   *   rows:[ { h:alturaPt, cells:[ cell|null, ... ] } ],
+   *   cell = { v, rich:[{t,bold,italic,size,color}], bold, italic, size, color, fill,
+   *            align:'left|center|right', valign:'top|center|bottom', wrap,
+   *            border:{ l:[estilo,cor], r:[..], t:[..], b:[..] } },
+   *   images:[ { png:Uint8Array, col, row, colOff, rowOff, w, h } ]   (col/row 0-based, medidas em px)
+   *   page:{ fitW, fitH, orientation, paper, margins:{l,r,t,b}, hCenter },
+   *   printArea:'A1:L40', showGrid:false
    * }) -> Uint8Array (bytes do .xlsx)
    */
   function build(spec){
@@ -1567,32 +1574,44 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     var rows = spec.rows || [];
     var colWidths = spec.colWidths || [];
     var merges = spec.merges || [];
-    var sheetName = spec.sheetName || 'Requisição';
+    var sheetName = (spec.sheetName || 'Requisição').slice(0,31);
+    var images = spec.images || [];
+    var page = spec.page || {};
 
-    // ---- monta a lista de estilos (xf) usados, evitando duplicar ----
-    var fonts = [{bold:false,size:11,color:null}];
-    var fills = [{color:null}];
-    var xfs = [{fontIdx:0,fillIdx:0,align:null,wrap:false}];
+    var fonts = [{bold:false,italic:false,size:11,color:null}];
+    var fills = [];
+    var borders = [{}];
+    var xfs = [{fontIdx:0,fillIdx:-1,borderIdx:0,align:null,valign:null,wrap:false}];
+    function findOrAdd(arr, obj){
+      var k = JSON.stringify(obj);
+      for (var i = 0; i < arr.length; i++) if (JSON.stringify(arr[i]) === k) return i;
+      arr.push(obj); return arr.length-1;
+    }
     function styleIdx(c){
       c = c || {};
-      var fontIdx = fonts.findIndex(function(f){ return f.bold===!!c.bold && f.size===(c.size||11) && f.color===(c.color||null); });
-      if (fontIdx < 0){ fonts.push({bold:!!c.bold,size:c.size||11,color:c.color||null}); fontIdx = fonts.length-1; }
-      var fillIdx = 0;
-      if (c.fill){
-        fillIdx = fills.findIndex(function(f){ return f.color===c.fill; });
-        if (fillIdx < 0){ fills.push({color:c.fill}); fillIdx = fills.length-1; }
-      }
-      var xfIdx = xfs.findIndex(function(x){ return x.fontIdx===fontIdx && x.fillIdx===fillIdx && x.align===(c.align||null) && x.wrap===!!c.wrap; });
-      if (xfIdx < 0){ xfs.push({fontIdx:fontIdx,fillIdx:fillIdx,align:c.align||null,wrap:!!c.wrap}); xfIdx = xfs.length-1; }
-      return xfIdx;
+      var fontIdx = findOrAdd(fonts, {bold:!!c.bold,italic:!!c.italic,size:c.size||11,color:c.color||null});
+      var fillIdx = c.fill ? findOrAdd(fills, {color:c.fill}) : -1;
+      var b = c.border || {};
+      var borderIdx = findOrAdd(borders, {l:b.l||null,r:b.r||null,t:b.t||null,b:b.b||null});
+      return findOrAdd(xfs, {fontIdx:fontIdx,fillIdx:fillIdx,borderIdx:borderIdx,align:c.align||null,valign:c.valign||null,wrap:!!c.wrap});
+    }
+    function runXml(r){
+      return '<r><rPr>'+(r.bold?'<b/>':'')+(r.italic?'<i/>':'')+'<sz val="'+(r.size||11)+'"/>'+
+        (r.color?'<color rgb="'+r.color+'"/>':'<color theme="1"/>')+'<rFont val="Calibri"/><family val="2"/></rPr>'+
+        '<t xml:space="preserve">'+xmlEsc(r.t)+'</t></r>';
     }
 
     var sheetRowsXml = [];
+    var maxCol = 0;
     rows.forEach(function(row, ri){
       var cellsXml = (row.cells||[]).map(function(cell, ci){
         if (cell == null) return '';
+        if (ci+1 > maxCol) maxCol = ci+1;
         var ref = colName(ci) + (ri+1);
         var sIdx = styleIdx(cell);
+        if (cell.rich && cell.rich.length){
+          return '<c r="'+ref+'" t="inlineStr" s="'+sIdx+'"><is>'+cell.rich.map(runXml).join('')+'</is></c>';
+        }
         var v = cell.v;
         if (v == null || v === '') return '<c r="'+ref+'" s="'+sIdx+'"/>';
         if (typeof v === 'number' && isFinite(v)){
@@ -1607,46 +1626,64 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
     var colsXml = colWidths.length ? ('<cols>'+colWidths.map(function(w,i){
       return '<col min="'+(i+1)+'" max="'+(i+1)+'" width="'+w+'" customWidth="1"/>';
     }).join('')+'</cols>') : '';
-
     var mergeXml = merges.length ? ('<mergeCells count="'+merges.length+'">'+
       merges.map(function(m){ return '<mergeCell ref="'+m+'"/>'; }).join('')+'</mergeCells>') : '';
 
+    var m = page.margins || {l:0.4,r:0.4,t:0.5,b:0.5};
+    var fitW = page.fitW==null ? 1 : page.fitW, fitH = page.fitH==null ? 1 : page.fitH;
     var sheetXml =
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
-      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
+      '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '+
+      'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+
+      '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'+
+      '<sheetViews><sheetView '+(spec.showGrid===false?'showGridLines="0" ':'')+'workbookViewId="0"/></sheetViews>'+
+      '<sheetFormatPr defaultRowHeight="15"/>'+
       colsXml+
       '<sheetData>'+sheetRowsXml.join('')+'</sheetData>'+
       mergeXml+
+      (page.hCenter===false ? '' : '<printOptions horizontalCentered="1"/>')+
+      '<pageMargins left="'+m.l+'" right="'+m.r+'" top="'+m.t+'" bottom="'+m.b+'" header="0.3" footer="0.3"/>'+
+      '<pageSetup paperSize="'+(page.paper||9)+'" orientation="'+(page.orientation||'portrait')+'" fitToWidth="'+fitW+'" fitToHeight="'+fitH+'"/>'+
+      (images.length ? '<drawing r:id="rId1"/>' : '')+
       '</worksheet>';
 
-    var fontsXml = fonts.map(function(f){
-      return '<font>'+(f.bold?'<b/>':'')+'<sz val="'+f.size+'"/>'+(f.color?'<color rgb="'+f.color+'"/>':'<color theme="1"/>')+'<name val="Calibri"/></font>';
-    }).join('');
+    var fontsXml = fonts.map(fontXml).join('');
     var fillsXml = '<fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill>'+
-      fills.slice(1).map(function(f){
+      fills.map(function(f){
         return '<fill><patternFill patternType="solid"><fgColor rgb="'+f.color+'"/><bgColor indexed="64"/></patternFill></fill>';
       }).join('');
+    function edge(tag, e){
+      return e ? '<'+tag+' style="'+e[0]+'"><color rgb="'+(e[1]||'FF000000')+'"/></'+tag+'>' : '<'+tag+'/>';
+    }
+    var bordersXml = borders.map(function(b){
+      return '<border>'+edge('left',b.l)+edge('right',b.r)+edge('top',b.t)+edge('bottom',b.b)+'<diagonal/></border>';
+    }).join('');
     var xfsXml = xfs.map(function(x){
-      var align = x.align || x.wrap ? '<alignment'+(x.align?' horizontal="'+x.align+'"':'')+(x.wrap?' wrapText="1"':'')+' vertical="center"/>' : '';
-      return '<xf numFmtId="0" fontId="'+x.fontIdx+'" fillId="'+(x.fillIdx===0?0:x.fillIdx+1)+'" borderId="0" xfId="0" applyFont="1" applyFill="'+(x.fillIdx?1:0)+'" applyAlignment="'+(align?1:0)+'">'+align+'</xf>';
+      var hasAl = x.align || x.valign || x.wrap;
+      var al = hasAl ? '<alignment'+(x.align?' horizontal="'+x.align+'"':'')+' vertical="'+(x.valign||'center')+'"'+(x.wrap?' wrapText="1"':'')+'/>' : '';
+      return '<xf numFmtId="0" fontId="'+x.fontIdx+'" fillId="'+(x.fillIdx<0?0:x.fillIdx+2)+'" borderId="'+x.borderIdx+'" xfId="0" applyFont="1" applyFill="'+(x.fillIdx<0?0:1)+'" applyBorder="'+(x.borderIdx?1:0)+'" applyAlignment="'+(hasAl?1:0)+'">'+al+'</xf>';
     }).join('');
 
     var stylesXml =
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
       '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'+
       '<fonts count="'+fonts.length+'">'+fontsXml+'</fonts>'+
-      '<fills count="'+(fills.length+1)+'">'+fillsXml+'</fills>'+
-      '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>'+
+      '<fills count="'+(fills.length+2)+'">'+fillsXml+'</fills>'+
+      '<borders count="'+borders.length+'">'+bordersXml+'</borders>'+
       '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'+
       '<cellXfs count="'+xfs.length+'">'+xfsXml+'</cellXfs>'+
       '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'+
       '</styleSheet>';
 
+    var lastRow = rows.length || 1;
+    var area = spec.printArea || ('A1:'+colName(Math.max(maxCol,1)-1)+lastRow);
+    var areaAbs = area.replace(/([A-Z]+)(\d+)/g, '$$$1$$$2');
     var workbookXml =
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
       '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '+
       'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+
-      '<sheets><sheet name="'+xmlEsc(sheetName).slice(0,31)+'" sheetId="1" r:id="rId1"/></sheets>'+
+      '<sheets><sheet name="'+xmlEsc(sheetName)+'" sheetId="1" r:id="rId1"/></sheets>'+
+      '<definedNames><definedName name="_xlnm.Print_Area" localSheetId="0">\''+xmlEsc(sheetName)+'\'!'+areaAbs+'</definedName></definedNames>'+
       '</workbook>';
 
     var contentTypesXml =
@@ -1654,9 +1691,11 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'+
       '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'+
       '<Default Extension="xml" ContentType="application/xml"/>'+
+      (images.length ? '<Default Extension="png" ContentType="image/png"/>' : '')+
       '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'+
       '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>'+
       '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'+
+      (images.length ? '<Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : '')+
       '</Types>';
 
     var rootRelsXml =
@@ -1681,6 +1720,34 @@ function(t){t.__bidiEngine__=t.prototype.__bidiEngine__=function(t){var r,n,i,a,
       { name: 'xl/worksheets/sheet1.xml', content: sheetXml }
     ];
 
+    if (images.length){
+      var EMU = 9525, anchors = '', drawRels = '';
+      images.forEach(function(im, k){
+        anchors +=
+          '<xdr:oneCellAnchor><xdr:from><xdr:col>'+im.col+'</xdr:col><xdr:colOff>'+Math.round((im.colOff||0)*EMU)+'</xdr:colOff>'+
+          '<xdr:row>'+im.row+'</xdr:row><xdr:rowOff>'+Math.round((im.rowOff||0)*EMU)+'</xdr:rowOff></xdr:from>'+
+          '<xdr:ext cx="'+Math.round(im.w*EMU)+'" cy="'+Math.round(im.h*EMU)+'"/>'+
+          '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="'+(k+2)+'" name="Logo '+(k+1)+'" descr="VCG"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>'+
+          '<xdr:blipFill><a:blip r:embed="rId'+(k+1)+'"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>'+
+          '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="'+Math.round(im.w*EMU)+'" cy="'+Math.round(im.h*EMU)+'"/></a:xfrm>'+
+          '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>';
+        drawRels += '<Relationship Id="rId'+(k+1)+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/image'+(k+1)+'.png"/>';
+        files.push({ name: 'xl/media/image'+(k+1)+'.png', content: im.png });
+      });
+      files.push({ name: 'xl/drawings/drawing1.xml', content:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+        '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '+
+        'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '+
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'+anchors+'</xdr:wsDr>' });
+      files.push({ name: 'xl/drawings/_rels/drawing1.xml.rels', content:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+drawRels+'</Relationships>' });
+      files.push({ name: 'xl/worksheets/_rels/sheet1.xml.rels', content:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'+
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'+
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>'+
+        '</Relationships>' });
+    }
     return zipStore(files);
   }
 
@@ -2636,8 +2703,7 @@ $('btnPrint').onclick=function(){
       '<th style="width:130px">Observação</th><th style="width:56px">Saída</th></tr></thead><tbody>'+
       ret.map(function(i,k){ return linha(i,k,true); }).join('')+'</tbody></table>'+
       '<div class="ret-av">A peça acima <b>não é retirada do estoque</b>: sai do veículo para oficina externa. '+
-      'Registrar data de saída e de retorno, e conferir o serviço executado antes de remontar.</div>'+
-      '<div class="sg2"><div>Data e hora da saída</div><div>Oficina / fornecedor</div><div>Data do retorno</div></div>';
+      'Registrar data de saída e de retorno, e conferir o serviço executado antes de remontar.</div>';
     }
     return out;
   })()+
@@ -2800,90 +2866,192 @@ function gerarPdfRequisicao(d){
   doc.text(rodape, 14, y);
   return doc.output('blob');
 }
-/* ---------- XLSX da requisição — mesmo conteúdo do PDF, em formato de
-   planilha (pra abrir/editar/imprimir no Excel/Sheets do computador). Usa o
-   MiniXLSX (gerador de .xlsx sem depender de nenhuma lib externa, ver bloco
-   logo depois do jsPDF/autoTable no <head>). */
-function gerarXlsxRequisicao(d){
-  var BRAND='FF3E4095', ROXO='FF4A2A73', CINZA='FF5A6B7D', VERM='FFB3261E';
+/* ---------- XLSX da requisição — mesmo layout do PDF/impressão (cabeçalho com logo,
+   quadro Identificação em 4 colunas, tabela com 7 colunas, assinaturas e rodapé),
+   em 1 página A4. Usa o MiniXLSX (gerador de .xlsx sem lib externa, ver bloco
+   antes do script principal). As colunas da planilha seguem a proporção do PDF:
+   # | Código | Peça (larga) | Un. | Qtd. | Observação | Saída/Atend. */
+function montaXlsxRequisicao(d, logoUri){
+  var ROXO='FF4A2A73', AZUL='FF2C2D6B', MARCA='FF3E4095', CINZA='FF555555', CLARO='FFE7E8F3', PRETO='FF000000', GRADE='FFBBBBBB';
+  // 12 colunas = 7 colunas da tabela + colunas auxiliares pro quadro de 4 colunas e pras 3 linhas de assinatura.
+  //  0:#  1:Código  2-6:Peça  7-8:Un.  9:Qtd.  10:Observação  11:Saída   (4 e 8 são separadores finos)
+  var LARG=[3,13,9,8,1.5,15.5,10,6,1.5,7.5,18.5,8];
+  var NC=LARG.length, ULT=NC-1;
+  var GR=[[0,2],[3,5],[6,9],[10,11]];         // 4 colunas iguais do quadro Identificação
+  var TER=[[0,3],[5,7],[9,11]];               // 3 terços das linhas de assinatura (4 e 8 = vão entre as linhas)
   var rows=[], merges=[];
-  function push(cells,h){ rows.push({h:h,cells:cells}); return rows.length; }
-  function linhaVazia(){ push([null]); }
-  function linhaLV(label,valor){ // label na col A, valor mesclado B:F
-    var n=push([{v:label,bold:true,color:CINZA},{v:valor==null||valor===''?'—':valor}]);
-    merges.push('B'+n+':F'+n);
+
+  function nova(h){ var r={h:h,cells:[]}; for(var i=0;i<NC;i++) r.cells.push(null); rows.push(r); return r; }
+  function cel(r,c1,c2,p){          // escreve (e mescla) c1..c2 numa linha; p.border = bordas do bloco inteiro
+    var ri=rows.indexOf(r), b=p.border||{};
+    for(var c=c1;c<=c2;c++){
+      var q={}; for(var k in p) q[k]=p[k];
+      q.border={ l:(c===c1?b.l:null), r:(c===c2?b.r:null), t:b.t, b:b.b };
+      if(c>c1){ q.v=null; q.rich=null; }
+      r.cells[c]=q;
+    }
+    if(c2>c1) merges.push(colL(c1)+(ri+1)+':'+colL(c2)+(ri+1));
   }
-  var titN=push([{v:'REQUISIÇÃO DE PEÇAS — MOTOR',bold:true,size:16,color:BRAND}],22);
-  merges.push('A'+titN+':F'+titN);
-  var subN=push([{v:'VCG · Setor de Manutenção · Almoxarifado  —  '+d.req+'  ·  '+d.data+' às '+d.hora,color:CINZA,size:10}]);
-  merges.push('A'+subN+':F'+subN);
-  linhaVazia();
+  function colL(n){ return String.fromCharCode(65+n); }
+  var fino=['thin',PRETO], cinza=['thin',GRADE];
+
+  // estimativa de linhas (o Excel não ajusta altura de célula mesclada sozinho)
+  function linhasDe(txt,larg,tam){
+    var cap=Math.max(6,Math.floor(larg*1.18*(10/tam))), n=0;
+    String(txt==null?'':txt).split('\n').forEach(function(par){
+      var l=1, cur=0;
+      par.split(' ').forEach(function(w){
+        var t=w.length+(cur?1:0);
+        if(cur+t>cap && cur>0){ l++; cur=w.length; } else cur+=t;
+      });
+      n+=l;
+    });
+    return n;
+  }
+  function larguraDe(c1,c2){ var s=0; for(var c=c1;c<=c2;c++) s+=LARG[c]; return s; }
+
+  // ---- cabeçalho: logo | título e subtítulo | nº da requisição ----
+  var r1=nova(24), r2=nova(18), r3=nova(16);
+  var linhaMarca={ t:null, b:['medium',MARCA] };
+  cel(r1,3,9,{v:'REQUISIÇÃO DE PEÇAS — MOTOR',bold:true,size:16,color:AZUL,valign:'bottom'});
+  cel(r2,3,9,{v:'VCG · Setor de Manutenção · Almoxarifado',size:10,valign:'center'});
+  cel(r1,10,11,{v:'Nº da requisição',size:9,align:'right',valign:'bottom'});
+  cel(r2,10,11,{v:d.req,bold:true,size:12,align:'right',valign:'center'});
+  cel(r3,10,11,{v:d.data+' às '+d.hora,size:9,align:'right',valign:'center'});
+  [r1,r2,r3].forEach(function(r){ for(var c=0;c<NC;c++){ if(!r.cells[c]) r.cells[c]={}; } });
+  for(var c=0;c<NC;c++){ var q=r3.cells[c]; q.border={l:q.border&&q.border.l||null,r:q.border&&q.border.r||null,t:null,b:['medium',MARCA]}; }
+  nova(6);
+
   var urg=d.urg.indexOf('URGENTE')===0;
   if(urg){
-    var un=push([{v:'*** URGENTE — VEÍCULO PARADO ***',bold:true,size:12,color:'FFFFFFFF',fill:VERM,align:'center'}],20);
-    merges.push('A'+un+':F'+un);
-    linhaVazia();
+    var ru=nova(22);
+    cel(ru,0,ULT,{v:'★ URGENTE — VEÍCULO PARADO ★',bold:true,size:12,align:'center',valign:'center',
+      border:{l:['medium',PRETO],r:['medium',PRETO],t:['medium',PRETO],b:['medium',PRETO]}});
+    nova(6);
   }
-  var kv=[
-    ['Mecânico solicitante', d.mec||'—'], ['Matrícula', d.mat||'—'],
-    ['Prefixo do veículo', (d.pre||'—') + (d.foraFrota?' (fora da encerrante)':'')],
-    ['Nº da O.E.', d.om||'—'], ['Categoria do veículo', d.tipoCarro||'—'],
-    ['Chassi', d.chassi||'—'], ['Motor / chassi', d.mot||'—'],
-    ['Setor', d.box], ['Turno', d.tur], ['Tipo de serviço', d.tipo],
-    ['Prioridade', d.urg], ['Qtd. de itens', String(d.itens.length)]
+
+  // ---- quadro Identificação (4 colunas) ----
+  var nRet=d.itens.filter(function(i){return i.modo==='retifica';}).length;
+  var campos=[
+    ['Mecânico solicitante',d.mec||'—'],['Matrícula',d.mat||'—'],
+    ['Prefixo do veículo',(d.pre||'—')+(d.foraFrota?' (fora da encerrante)':'')],['Nº da O.E.',d.om||'—'],
+    ['Categoria do veículo',d.tipoCarro||'—'],['Chassi',d.chassi||'—'],['Motor / chassi (código)',d.mot||'—'],['Setor',d.box||'—'],
+    ['Turno',d.tur||'—'],['Tipo de serviço',d.tipo||'—'],['Prioridade',d.urg||'—'],
+    ['Qtd. de itens',String(d.itens.length)+(nRet?' ('+nRet+' p/ retífica)':'')]
   ];
-  kv.forEach(function(p){ linhaLV(p[0],p[1]); });
-  linhaVazia();
+  var rh=nova(17);
+  cel(rh,0,ULT,{v:'IDENTIFICAÇÃO',bold:true,size:10,fill:CLARO,valign:'center',
+    border:{l:fino,r:fino,t:fino,b:fino}});
+  for(var lin=0;lin<3;lin++){
+    var rl=nova(13), rv=nova(16), maxL=1;
+    for(var g=0;g<4;g++){
+      var cp=campos[lin*4+g], g1=GR[g][0], g2=GR[g][1];
+      maxL=Math.max(maxL,linhasDe(cp[1],larguraDe(g1,g2),10));
+      var esq=(g===0)?fino:cinza, dir=(g===3)?fino:cinza, ult=(lin===2);
+      cel(rl,g1,g2,{v:cp[0].toUpperCase(),size:7.5,color:CINZA,valign:'bottom',border:{l:esq,r:dir,t:null,b:null}});
+      cel(rv,g1,g2,{v:cp[1],bold:true,size:10,wrap:true,valign:'top',border:{l:esq,r:dir,t:null,b:ult?fino:cinza}});
+    }
+    rv.h=Math.max(16,maxL*13+3);
+  }
+  nova(8);
 
-  var nova=d.itens.filter(function(i){ return i.modo!=='retifica'; });
-  var ret =d.itens.filter(function(i){ return i.modo==='retifica'; });
+  var nova_=d.itens.filter(function(i){return i.modo!=='retifica';});
+  var ret_ =d.itens.filter(function(i){return i.modo==='retifica';});
+  var bFull={l:fino,r:fino,t:fino,b:fino};
 
-  function tabela(titulo, corTitulo, corCab, cols, linhas){
-    var tn=push([{v:titulo,bold:true,size:11,color:corTitulo}]);
-    merges.push('A'+tn+':F'+tn);
-    push(cols.map(function(c){ return {v:c,bold:true,color:'FFFFFFFF',fill:corCab}; }),16);
-    linhas.forEach(function(cells){ push(cells); });
+  function tabela(titulo,corTit,cabPeca,lista,ultCab,comServ){
+    var rt=nova(17);
+    cel(rt,0,ULT,{v:titulo.toUpperCase(),bold:true,size:10,color:corTit,valign:'center'});
+    var rc=nova(18);
+    cel(rc,0,0,{v:'#',bold:true,size:9,fill:CLARO,align:'center',valign:'center',border:bFull});
+    cel(rc,1,1,{v:'CÓDIGO',bold:true,size:9,fill:CLARO,valign:'center',border:bFull});
+    cel(rc,2,6,{v:cabPeca,bold:true,size:9,fill:CLARO,valign:'center',border:bFull});
+    cel(rc,7,8,{v:'UN.',bold:true,size:9,fill:CLARO,align:'center',valign:'center',border:bFull});
+    cel(rc,9,9,{v:'QTD.',bold:true,size:9,fill:CLARO,align:'center',valign:'center',border:bFull});
+    cel(rc,10,10,{v:'OBSERVAÇÃO',bold:true,size:9,fill:CLARO,valign:'center',border:bFull});
+    cel(rc,11,11,{v:ultCab,bold:true,size:9,fill:CLARO,align:'center',valign:'center',border:bFull});
+    lista.forEach(function(i,k){
+      var rr=nova(17), runs=[{t:i.n,size:10}], extra='';
+      if(!comServ){
+        if(i.so) runs.push({t:' (só original)',bold:true,size:10});
+        else if(i.fo) runs.push({t:' — paralela: '+i.fo,size:10,color:CINZA});
+      }
+      var l=linhasDe(runs.map(function(x){return x.t;}).join(''),larguraDe(2,6),10);
+      if(i.nota){ runs.push({t:'\nNota técnica: '+i.nota,size:8,color:CINZA}); l+=linhasDe('Nota técnica: '+i.nota,larguraDe(2,6),8); }
+      if(!comServ&&i.ref){ runs.push({t:'\nRef. paralela: '+i.ref,size:8,color:AZUL}); l+=linhasDe('Ref. paralela: '+i.ref,larguraDe(2,6),8); }
+      if(comServ){ runs.push({t:'\nServiço: '+(i.serv||'—'),size:8,color:ROXO}); l+=linhasDe('Serviço: '+(i.serv||'—'),larguraDe(2,6),8); }
+      l=Math.max(l,linhasDe(i.o,LARG[10],10));
+      cel(rr,0,0,{v:k+1,size:10,align:'center',valign:'top',border:bFull});
+      cel(rr,1,1,{v:i.c,size:10,valign:'top',border:bFull});
+      cel(rr,2,6,{rich:runs,wrap:true,valign:'top',border:bFull});
+      cel(rr,7,8,{v:i.u,size:10,align:'center',valign:'top',border:bFull});
+      cel(rr,9,9,{v:i.q,bold:true,size:10,align:'center',valign:'top',border:bFull});
+      cel(rr,10,10,{v:i.o||'',size:10,wrap:true,valign:'top',border:bFull});
+      cel(rr,11,11,{v:'',size:10,border:bFull});
+      rr.h=Math.max(30,l*13+6);
+    });
   }
-  if(nova.length){
-    tabela('A · Peças a retirar no almoxarifado', BRAND, BRAND,
-      ['#','Código','Descrição','Un.','Qtd.','Observação'],
-      nova.map(function(i,k){
-        var desc=i.n+(i.so?' (só original)':(i.fo?' — paralela: '+i.fo:''))+(i.nota?' | Nota: '+i.nota:'');
-        return [{v:k+1},{v:i.c},{v:desc},{v:i.u},{v:i.q},{v:i.o||''}];
-      }));
-    linhaVazia();
+
+  if(nova_.length){
+    tabela('A · Peças a retirar no almoxarifado',AZUL,'DESCRIÇÃO DA PEÇA',nova_,'ATEND.',false);
+    nova(10);
   }
-  if(ret.length){
-    tabela('B · Encaminhamento para retífica / serviço externo', ROXO, ROXO,
-      ['#','Código','Peça e serviço solicitado','Un.','Qtd.','Observação'],
-      ret.map(function(i,k){
-        return [{v:k+1},{v:i.c},{v:i.n+' | Serviço: '+(i.serv||'—')},{v:i.u},{v:i.q},{v:i.o||''}];
-      }));
-    var avN=push([{v:'A peça acima não é retirada do estoque: sai do veículo para oficina externa. Registrar data de saída e de retorno, e conferir o serviço executado antes de remontar.',italic:true,size:9,color:CINZA}]);
-    merges.push('A'+avN+':F'+avN);
-    linhaVazia();
+  if(ret_.length){
+    tabela('B · Encaminhamento para retífica / serviço externo',ROXO,'PEÇA E SERVIÇO SOLICITADO',ret_,'SAÍDA',true);
+    nova(6);
+    var ra=nova(28), roxoB=['thin',ROXO];
+    cel(ra,0,ULT,{rich:[
+      {t:'A peça acima ',size:9},{t:'não é retirada do estoque',bold:true,size:9},
+      {t:': sai do veículo para oficina externa. Registrar data de saída e de retorno, e conferir o serviço executado antes de remontar.',size:9}],
+      fill:'FFF4EFFB',wrap:true,valign:'center',border:{l:roxoB,r:roxoB,t:roxoB,b:roxoB}});
+    nova(8);
   }
-  var sgN=push([{v:'Assinatura do mecânico:',bold:true},null,null,{v:'Atendido pelo almoxarifado:',bold:true}]);
-  linhaVazia();
   if(d.obs){
-    var obN=push([{v:'Defeito / observação geral:',bold:true}]);
-    merges.push('A'+obN+':F'+obN);
-    var obN2=push([{v:d.obs}]);
-    merges.push('A'+obN2+':F'+obN2);
-    linhaVazia();
+    var ro=nova(17);
+    cel(ro,0,ULT,{v:'DEFEITO / OBSERVAÇÃO GERAL',bold:true,size:10,fill:CLARO,valign:'center',border:{l:fino,r:fino,t:fino,b:fino}});
+    var rt2=nova(Math.max(18,linhasDe(d.obs,larguraDe(0,ULT),10)*13+6));
+    cel(rt2,0,ULT,{v:d.obs,size:10,wrap:true,valign:'top',border:{l:fino,r:fino,t:null,b:fino}});
+    nova(8);
   }
-  var rodapeN=push([{v:'Filtros, óleo, aditivo e ARLA não constam nesta requisição — solicitados por O.E. específica. '+
-    'Os códigos desta requisição ainda são provisórios — conferir pela descrição da peça até o cadastro do almoxarifado ser importado. '+
-    'Total de '+d.itens.length+' item(ns) · '+d.itens.reduce(function(s,i){return s+i.q;},0)+' peça(s) · Emitido em '+d.iso+
-    ' pelo sistema de solicitação de peças — direto pro almoxarifado.',italic:true,size:8,color:CINZA}]);
-  merges.push('A'+rodapeN+':F'+rodapeN);
+  // assinaturas (a 3ª posição fica vazia, igual ao PDF)
+  (function(){
+    var rl=nova(32), rt=nova(15);
+    [['Assinatura do mecânico',0],['Atendido pelo almoxarifado',1]].forEach(function(p){
+      var a=TER[p[1]][0], b=TER[p[1]][1];
+      cel(rl,a,b,{border:{t:null,b:fino}});
+      cel(rt,a,b,{v:p[0],size:9,align:'center',valign:'top'});
+    });
+  })();
+  nova(8);
+  // rodapé
+  var tot=d.itens.reduce(function(s,i){return s+i.q;},0);
+  var rf1=nova(13), rf2=nova(13), rf3=nova(13);
+  var topo={t:cinza,b:null};
+  cel(rf1,0,ULT,{rich:[{t:'Filtros, óleo, aditivo e ARLA não constam nesta requisição',bold:true,size:8,color:CINZA},{t:' — solicitados por O.E. específica.',size:8,color:CINZA}],valign:'center',border:topo});
+  cel(rf2,0,ULT,{rich:[{t:'Os códigos desta requisição ainda são provisórios',bold:true,size:8,color:CINZA},{t:' — conferir pela descrição da peça até o cadastro do almoxarifado ser importado.',size:8,color:CINZA}],valign:'center'});
+  cel(rf3,0,ULT,{v:'Total de '+d.itens.length+' item(ns) · '+tot+' peça(s) · Emitido em '+d.iso+' pelo sistema de solicitação de peças — direto pro almoxarifado.',size:8,color:CINZA,valign:'center'});
 
-  var bytes=MiniXLSX.build({
-    sheetName:'Requisição',
-    colWidths:[6,16,46,7,8,26],
-    merges:merges,
-    rows:rows
+  // logo (PNG) ao lado do título; se der qualquer problema, segue sem logo
+  var imagens=[];
+  try{
+    var m=/^data:image\/png;base64,(.+)$/.exec(logoUri||'');
+    if(m){
+      var bin=atob(m[1]), by=new Uint8Array(bin.length);
+      for(var i=0;i<bin.length;i++) by[i]=bin.charCodeAt(i);
+      var w0=(by[16]<<24|by[17]<<16|by[18]<<8|by[19])>>>0, h0=(by[20]<<24|by[21]<<16|by[22]<<8|by[23])>>>0;
+      if(w0>0&&h0>0){ var hh=44; imagens.push({png:by,col:0,row:0,colOff:4,rowOff:10,w:Math.round(hh*w0/h0),h:hh}); }
+    }
+  }catch(e){ imagens=[]; }
+
+  var ultima=rows.length;
+  return MiniXLSX.build({
+    sheetName:'Requisição', colWidths:LARG, merges:merges, rows:rows, images:imagens, showGrid:false,
+    printArea:'A1:'+colL(ULT)+ultima,
+    page:{ paper:9, orientation:'portrait', fitW:1, fitH:(d.itens.length<=24?1:0), margins:{l:0.4,r:0.4,t:0.5,b:0.5}, hCenter:true }
   });
+}
+function gerarXlsxRequisicao(d){
+  var bytes=montaXlsxRequisicao(d, (typeof LOGO!=='undefined'?LOGO:''));
   return new Blob([bytes],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
 }
 $('btnXlsx').onclick=function(){
