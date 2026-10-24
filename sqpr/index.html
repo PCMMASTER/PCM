@@ -105,6 +105,13 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .sync i{width:.5rem;height:.5rem;border-radius:50%;background:var(--ink-2);opacity:.6}
 .sync[data-s="synced"] i{background:var(--ok);opacity:1}
 .sync[data-s="saving"] i{background:var(--accent);opacity:1}
+button.sync{border:0;background:none;font-family:inherit;cursor:pointer}
+button.sync:hover span{color:var(--ink);text-decoration:underline}
+.acct-form{display:grid;gap:.5rem;max-width:26rem;margin-top:.75rem}
+.acct-form input{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);height:2.6rem;padding:0 .7rem;font:inherit;font-size:1rem}
+.acct-more{margin-top:1rem}
+.acct-more summary{cursor:pointer;color:var(--ink-2);font-weight:600}
+.acct-msg{color:var(--warn,#c0392b);margin:.6rem 0 0;font-size:.9375rem}
 
 /* ---------- LAYOUT ---------- */
 main{max-width:1180px;margin:0 auto;padding:clamp(1.5rem,4vw,2.5rem) clamp(1rem,4vw,2rem) 3rem}
@@ -1103,7 +1110,7 @@ let selWeek=null;
 function renderTabs(){
   const box=document.getElementById("tabs");
   box.replaceChildren(...TABS.map(([k,l])=>h("button",{type:"button",class:"tab",role:"tab","aria-selected":String(view===k),"aria-controls":"view",onclick:()=>go(k)},l)),
-    h("div",{class:"sync",id:"sync","data-s":syncState},h("i"),h("span",{text:syncLabel()})));
+    h("button",{type:"button",class:"sync",id:"sync","data-s":syncState,title:"Sincronização",onclick:()=>go("kit")},h("i"),h("span",{text:syncLabel()})));
 }
 function go(k){
   view=k; try{ history.replaceState(null,"","#"+k); }catch(e){ location.hash=k; }
@@ -1882,8 +1889,9 @@ function viewKit(){
       h("div",{class:"tbl-foot"},h("button",{type:"button",class:"btn-ghost",onclick:()=>{ K.anuncios.push({id:uid(),titulo:"",texto:""}); commit(); }},ic("plus"),"Novo anúncio")),
       Note(K,"annNota")),
     Sec(T("rev","Revisão semanal: 20 minutos"),Table(K.revisao,[{k:"a",label:"Pergunta",cls:"strong"},{k:"b",label:"O que observar"},{k:"c",label:"Próxima ação"}],{key:"rev",what:"Pergunta"}),Note(K,"revNota")),
+    SyncSec(),
     Sec(h("h2",{text:"Backup"}),
-      h("p",{class:"lead",text:"Tudo é salvo automaticamente neste aparelho, mesmo sem internet. Para passar o plano entre o PC e o iPhone, baixe o backup aqui e restaure no outro aparelho."}),
+      h("p",{class:"lead",text:"Tudo é salvo automaticamente neste aparelho, mesmo sem internet. O backup em arquivo é uma cópia extra de segurança."}),
       h("div",{class:"backup"},
         h("button",{type:"button",class:"btn-ghost",onclick:exportar},ic("dl"),"Baixar backup (.json)"),
         h("label",{class:"btn-ghost",style:"cursor:pointer"},ic("ul"),"Restaurar de um backup",h("input",{type:"file",accept:"application/json,.json",class:"sr",onchange:importar})),
@@ -1933,19 +1941,155 @@ function render(){
 
 /* ===================== SINCRONIZAÇÃO ===================== */
 let syncState="local", docRef=null, remoteT=null, writing=false, dirty=false, pendingRemote=null;
-function syncLabel(){ return {local:"Salvo neste aparelho",saving:"Salvando…",synced:"Sincronizado",full:"Armazenamento cheio"}[syncState]||""; }
+const FB_CONFIG={"apiKey": "AIzaSyD50n_-7q4bcAAnO_5TePslv5wQEUn5v9o", "authDomain": "sqpr-hunter.firebaseapp.com", "projectId": "sqpr-hunter", "storageBucket": "sqpr-hunter.firebasestorage.app", "messagingSenderId": "881447268945", "appId": "1:881447268945:web:351a9bb506d6474c4ebe70"};
+const FB_V="10.14.1";
+let fb=null, fbLoading=null, user=null, unsub=null, authMsg="", authBusy=false;
+function syncLabel(){
+  if(syncState==="local"&&!user&&FB_CONFIG.apiKey) return "Só neste aparelho · Entrar";
+  return {local:"Salvo neste aparelho",offline:"Offline · salvo no aparelho",saving:"Salvando…",synced:"Sincronizado",full:"Nuvem cheia"}[syncState]||"";
+}
 function setSync(s){ syncState=s; const el=document.getElementById("sync"); if(el){ el.dataset.s=s; el.lastChild.textContent=syncLabel(); } }
-function scheduleRemote(){ if(!docRef) return; setSync("saving"); clearTimeout(remoteT); remoteT=setTimeout(pushRemote,1400); }
+function scheduleRemote(){ if(!docRef) return; setSync(navigator.onLine?"saving":"offline"); clearTimeout(remoteT); remoteT=setTimeout(pushRemote,1200); }
 async function pushRemote(){
-  if(!docRef) return; if(writing){ dirty=true; return; }
-  writing=true;
-  try{ await docRef.set({json:JSON.stringify(S),updatedAt:S.updatedAt}); setSync("synced"); }
-  catch(e){ const c=e&&e.code; if(c==="quota_exceeded") setSync("full"); else { setSync("local"); if(c==="invalid_argument"||c==="revoked"||c==="not_granted"||c==="capability_disabled") docRef=null; } }
+  if(!docRef) return; remoteT=null; if(writing){ dirty=true; return; }
+  writing=true; const ref=docRef;
+  try{ await ref.set({json:JSON.stringify(S),updatedAt:S.updatedAt||Date.now()}); if(docRef===ref) setSync("synced"); }
+  catch(e){ const c=e&&e.code;
+    if(c==="resource-exhausted") setSync("full");
+    else { setSync("local"); if(c==="permission-denied"||c==="unauthenticated"){ authMsg="A nuvem recusou a gravação. Saia e entre de novo."; refreshAcct(); } } }
   writing=false; if(dirty){ dirty=false; pushRemote(); }
 }
-function editing(){ const a=document.activeElement; return !!(a&&(a.isContentEditable||a.tagName==="INPUT"||a.tagName==="SELECT")); }
-function applyRemoteIfIdle(){ if(!pendingRemote||editing()) return; const r=pendingRemote; pendingRemote=null; try{ S=migrate(JSON.parse(r)); persistLocal(); renderHero(); renderFoot(); render(); }catch(e){} }
-/* versão offline: tudo fica salvo no navegador (localStorage) */
+function editing(){ const a=document.activeElement; return !!(a&&(a.isContentEditable||a.tagName==="INPUT"||a.tagName==="SELECT"||a.tagName==="TEXTAREA")&&!(a.closest&&a.closest(".acct-form"))); }
+function applyRemoteIfIdle(){
+  if(!pendingRemote||editing()) return; const r=pendingRemote; pendingRemote=null;
+  try{ const o=JSON.parse(r); if((o.updatedAt||0)<=(S.updatedAt||0)) return; S=migrate(o); persistLocal(); renderHero(); renderFoot(); render(); }catch(e){}
+}
+
+/* ---------- Firebase: carrega sob demanda (sem internet o app segue local) ---------- */
+function fbLoad(){
+  if(fb) return Promise.resolve(fb);
+  if(!FB_CONFIG.apiKey) return Promise.resolve(null);
+  if(fbLoading) return fbLoading;
+  const base=`https://www.gstatic.com/firebasejs/${FB_V}/`;
+  fbLoading=Promise.all([import(base+"firebase-app.js"),import(base+"firebase-auth.js"),import(base+"firebase-firestore.js")])
+    .then(([APP,A,F])=>{
+      const app=APP.initializeApp(FB_CONFIG);
+      const auth=A.initializeAuth(app,{persistence:[A.indexedDBLocalPersistence,A.browserLocalPersistence],popupRedirectResolver:A.browserPopupRedirectResolver});
+      fb={auth,A,F,db:F.getFirestore(app)};
+      A.onAuthStateChanged(auth,onUser);
+      A.getRedirectResult(auth).catch(authErr);
+      return fb;
+    })
+    .catch(e=>{ fbLoading=null; throw e; });
+  return fbLoading;
+}
+function onUser(u){
+  user=u||null; if(unsub){ unsub(); unsub=null; } docRef=null; pendingRemote=null;
+  if(!user){ setSync("local"); refreshAcct(); renderTabs(); return; }
+  authMsg="";
+  const ref=fb.F.doc(fb.db,"planos",user.uid);
+  const me={set:d=>fb.F.setDoc(ref,d)}; docRef=me;
+  let first=true;
+  unsub=fb.F.onSnapshot(ref,snap=>{
+    if(docRef!==me||snap.metadata.hasPendingWrites) return;
+    const d=snap.data(); const rt=(d&&d.updatedAt)||0, lt2=S.updatedAt||0;
+    if(first){
+      first=false;
+      if(!d||!d.json){ pushRemote(); }
+      else if(rt>lt2){
+        const antes=JSON.stringify(S), tinha=lt2>0;
+        pendingRemote=d.json; applyRemoteIfIdle(); setSync("synced");
+        if(tinha) toast("Plano da nuvem carregado","Manter o deste aparelho",()=>{ S=JSON.parse(antes); commit(); });
+      }
+      else if(rt<lt2) pushRemote();
+      else setSync("synced");
+      refreshAcct(); renderTabs(); return;
+    }
+    if(d&&d.json&&rt>lt2){ pendingRemote=d.json; applyRemoteIfIdle(); }
+    if(!writing&&!dirty) setSync("synced");
+  },e=>{ setSync("local"); authMsg="Não foi possível ler a nuvem ("+((e&&e.code)||"erro")+")."; refreshAcct(); });
+  refreshAcct(); renderTabs();
+}
+const AUTH_ERR={
+  "auth/invalid-email":"E-mail inválido.",
+  "auth/invalid-credential":"E-mail ou senha incorretos.",
+  "auth/wrong-password":"E-mail ou senha incorretos.",
+  "auth/user-not-found":"Não existe conta com esse e-mail. Use “Criar conta”.",
+  "auth/email-already-in-use":"Já existe conta com esse e-mail. Use “Entrar”.",
+  "auth/weak-password":"A senha precisa ter pelo menos 6 caracteres.",
+  "auth/missing-password":"Digite a senha.",
+  "auth/too-many-requests":"Muitas tentativas. Espere alguns minutos.",
+  "auth/network-request-failed":"Sem internet agora. Tente de novo quando conectar.",
+  "auth/unauthorized-domain":"Este endereço ainda não está autorizado no Firebase.",
+  "auth/operation-not-allowed":"Esse tipo de login não está ativado no Firebase."
+};
+function authErr(e){ if(!e||!e.code) return; authMsg=AUTH_ERR[e.code]||("Não deu para entrar ("+e.code+")."); refreshAcct(); toast(authMsg); }
+async function withFb(fn){
+  if(authBusy) return; authBusy=true; authMsg=""; refreshAcct();
+  try{ const f=await fbLoad(); if(!f) throw {code:"auth/operation-not-allowed"}; await fn(f); }
+  catch(e){ if(e&&e.code) authErr(e); else { authMsg="Sem conexão com a nuvem agora. Tente de novo quando tiver internet."; toast(authMsg); } }
+  authBusy=false; refreshAcct();
+}
+function entrarGoogle(){
+  return withFb(async f=>{
+    const p=new f.A.GoogleAuthProvider(); p.setCustomParameters({prompt:"select_account"});
+    try{ await f.A.signInWithPopup(f.auth,p); }
+    catch(e){
+      const c=e&&e.code;
+      if(c==="auth/popup-closed-by-user"||c==="auth/cancelled-popup-request") return;
+      if(c==="auth/popup-blocked"||c==="auth/operation-not-supported-in-this-environment"||c==="auth/web-storage-unsupported"){ await f.A.signInWithRedirect(f.auth,p); return; }
+      throw e;
+    }
+  });
+}
+function lerForm(){ const em=(document.getElementById("acct-em")||{}).value||"", pw=(document.getElementById("acct-pw")||{}).value||""; return [em.trim(),pw]; }
+function entrarEmail(criar){
+  const [em,pw]=lerForm();
+  return withFb(f=>criar?f.A.createUserWithEmailAndPassword(f.auth,em,pw):f.A.signInWithEmailAndPassword(f.auth,em,pw));
+}
+function esqueciSenha(){
+  const [em]=lerForm(); if(!em){ authMsg="Digite seu e-mail acima e toque de novo em “Esqueci a senha”."; refreshAcct(); return; }
+  return withFb(async f=>{ await f.A.sendPasswordResetEmail(f.auth,em); toast("Enviamos um link para redefinir a senha"); });
+}
+function sair(){ return withFb(f=>f.A.signOut(f.auth)); }
+
+function acctKids(){
+  const msg=authMsg?h("p",{class:"acct-msg",role:"alert",text:authMsg}):null;
+  if(!FB_CONFIG.apiKey) return [h("p",{class:"lead",text:"Sincronização ainda não configurada. Tudo fica salvo só neste aparelho."})];
+  if(user) return [
+    h("p",{class:"lead",text:`Conectado como ${user.email||"sua conta"}. O que você muda aqui aparece nos outros aparelhos conectados em poucos segundos. Sem internet, continua salvando no aparelho e envia quando a conexão voltar.`}),
+    h("div",{class:"backup"},h("button",{type:"button",class:"btn-ghost",disabled:authBusy||null,onclick:sair},"Sair desta conta")),
+    h("p",{class:"lead",style:"margin-top:.75rem",text:"Ao sair, o plano continua neste aparelho, mas para de sincronizar."}),
+    msg];
+  return [
+    h("p",{class:"lead",text:"Entre com a mesma conta no celular, no PC e onde mais usar: o plano fica igual em todos e é salvo na nuvem. Sem entrar, tudo continua salvo só neste aparelho."}),
+    h("div",{class:"backup"},h("button",{type:"button",class:"btn",disabled:authBusy||null,onclick:entrarGoogle},"Entrar com Google")),
+    h("details",{class:"acct-more"},
+      h("summary",{text:"Prefere e-mail e senha?"}),
+      h("div",{class:"acct-form"},
+        h("input",{id:"acct-em",type:"email",autocomplete:"email",placeholder:"seu e-mail","aria-label":"E-mail"}),
+        h("input",{id:"acct-pw",type:"password",autocomplete:"current-password",placeholder:"senha (mínimo 6 caracteres)","aria-label":"Senha"}),
+        h("div",{class:"backup"},
+          h("button",{type:"button",class:"btn",disabled:authBusy||null,onclick:()=>entrarEmail(false)},"Entrar"),
+          h("button",{type:"button",class:"btn-ghost",disabled:authBusy||null,onclick:()=>entrarEmail(true)},"Criar conta"),
+          h("button",{type:"button",class:"btn-ghost",disabled:authBusy||null,onclick:esqueciSenha},"Esqueci a senha")))),
+    msg];
+}
+function SyncSec(){ return Sec(h("h2",{text:"Sincronização entre aparelhos"}),h("div",{id:"acct"},...acctKids())); }
+function refreshAcct(){
+  const el=document.getElementById("acct"); if(!el) return;
+  const ae=document.activeElement, keep=ae&&ae.id&&el.contains(ae)?ae.id:null;
+  const vals={}; el.querySelectorAll("input[id]").forEach(i=>vals[i.id]=i.value);
+  const open=!!el.querySelector("details[open]");
+  el.replaceChildren(...acctKids().filter(Boolean));
+  for(const [k,v] of Object.entries(vals)){ const i=document.getElementById(k); if(i) i.value=v; }
+  if(open){ const d=el.querySelector("details"); if(d) d.open=true; }
+  if(keep){ const i=document.getElementById(keep); if(i) i.focus(); }
+}
+window.addEventListener("online",()=>{ if(docRef) pushRemote(); else fbLoad().catch(()=>{}); });
+window.addEventListener("offline",()=>{ if(docRef) setSync("offline"); });
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden"&&docRef&&(remoteT||dirty)){ clearTimeout(remoteT); remoteT=null; pushRemote(); } });
+fbLoad().catch(()=>{});
 
 /* ===================== INICIAR ===================== */
 pruneChecks();

@@ -1,7 +1,7 @@
 /* SQPR Hunter — service worker
    Ao publicar uma versão nova do index.html, troque o número abaixo (v1 -> v2…)
    para o app avisar "Nova versão disponível". */
-const VERSAO = "sqpr-v1";
+const VERSAO = "sqpr-v2";
 const ARQUIVOS = [
   "./",
   "./index.html",
