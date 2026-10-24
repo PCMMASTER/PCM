@@ -543,9 +543,28 @@ details.bank summary{cursor:pointer;font-weight:700;font-size:.9375rem;color:var
   .tabs,.acts,.adder,.tbl-foot,.toast,.now-card,.backup{display:none !important}
   .hero{min-height:auto;color:#000}
 }
+/* ---------- TELA DE LOGIN ---------- */
+body.locked>*:not(#gate):not(#toast):not(script){display:none !important}
+body.locked::before{display:none}
+body:not(.locked) #gate{display:none}
+#gate{min-height:100vh;min-height:100dvh;display:grid;place-items:center;padding:calc(env(safe-area-inset-top,0px) + 1.5rem) 16px calc(env(safe-area-inset-bottom,0px) + 1.5rem);background:radial-gradient(120% 80% at 50% 0%,color-mix(in oklab,var(--accent) 22%,var(--bg)),var(--bg) 70%)}
+.gate-card{width:100%;max-width:24rem;background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:2rem 1.5rem;box-shadow:0 24px 60px -30px rgba(0,0,0,.45)}
+.gate-brand{margin:0;font-weight:800;font-size:.8125rem;letter-spacing:.12em;text-transform:uppercase;color:var(--ink-2)}
+.gate-card h1{margin:.4rem 0 .35rem;font-size:1.75rem;line-height:1.1;font-weight:900;font-stretch:115%}
+.gate-sub{margin:.4rem 0 1.4rem;color:var(--ink-2)}
+.gate-card .btn,.gate-card .btn-ghost{width:100%;justify-content:center}
+.gate-or{display:flex;align-items:center;gap:.75rem;margin:1.1rem 0;color:var(--ink-2);font-size:.8125rem}
+.gate-or::before,.gate-or::after{content:"";flex:1;height:1px;background:var(--line)}
+.gate-form{display:grid;gap:.55rem}
+.gate-form input{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--bg);color:var(--ink);height:2.75rem;padding:0 .8rem;font:inherit;font-size:1rem;width:100%;box-sizing:border-box}
+.gate-form input:focus{outline:2px solid var(--accent);outline-offset:1px}
+.gate-row{display:grid;grid-template-columns:1fr 1fr;gap:.55rem}
+.gate-link{background:none;border:0;padding:.4rem 0 0;color:var(--ink-2);font:inherit;font-size:.875rem;text-decoration:underline;cursor:pointer;justify-self:start}
+.gate-card .acct-msg{margin:.9rem 0 0}
 </style>
 </head>
-<body>
+<body class="locked">
+<div id="gate"><div class="gate-card" id="gateBox"><p class="gate-brand">SQPR Hunter</p><p class="gate-sub">Carregando…</p></div></div>
 <header class="hero" id="hero" data-phase="anoitecer">
   <div class="sky"></div><div class="stars"></div><div class="sun"></div>
   <svg class="scene" id="scene" viewBox="0 0 1600 600" preserveAspectRatio="xMidYMax slice" aria-hidden="true"></svg>
@@ -1944,6 +1963,8 @@ let syncState="local", docRef=null, remoteT=null, writing=false, dirty=false, pe
 const FB_CONFIG={"apiKey": "AIzaSyD50n_-7q4bcAAnO_5TePslv5wQEUn5v9o", "authDomain": "sqpr-hunter.firebaseapp.com", "projectId": "sqpr-hunter", "storageBucket": "sqpr-hunter.firebasestorage.app", "messagingSenderId": "881447268945", "appId": "1:881447268945:web:351a9bb506d6474c4ebe70"};
 const FB_V="10.14.1";
 let fb=null, fbLoading=null, user=null, unsub=null, authMsg="", authBusy=false;
+let started=false, gateState="loading", unlockT=null;
+const LS_OWNER="sqpr-owner";
 function syncLabel(){
   if(syncState==="local"&&!user&&FB_CONFIG.apiKey) return "Só neste aparelho · Entrar";
   return {local:"Salvo neste aparelho",offline:"Offline · salvo no aparelho",saving:"Salvando…",synced:"Sincronizado",full:"Nuvem cheia"}[syncState]||"";
@@ -1959,10 +1980,10 @@ async function pushRemote(){
     else { setSync("local"); if(c==="permission-denied"||c==="unauthenticated"){ authMsg="A nuvem recusou a gravação. Saia e entre de novo."; refreshAcct(); } } }
   writing=false; if(dirty){ dirty=false; pushRemote(); }
 }
-function editing(){ const a=document.activeElement; return !!(a&&(a.isContentEditable||a.tagName==="INPUT"||a.tagName==="SELECT"||a.tagName==="TEXTAREA")&&!(a.closest&&a.closest(".acct-form"))); }
+function editing(){ const a=document.activeElement; return !!(a&&(a.isContentEditable||a.tagName==="INPUT"||a.tagName==="SELECT"||a.tagName==="TEXTAREA")&&!(a.closest&&a.closest("#gate"))); }
 function applyRemoteIfIdle(){
   if(!pendingRemote||editing()) return; const r=pendingRemote; pendingRemote=null;
-  try{ const o=JSON.parse(r); if((o.updatedAt||0)<=(S.updatedAt||0)) return; S=migrate(o); persistLocal(); renderHero(); renderFoot(); render(); }catch(e){}
+  try{ const o=JSON.parse(r); if((o.updatedAt||0)<=(S.updatedAt||0)) return; S=migrate(o); persistLocal(); if(started){ renderHero(); renderFoot(); render(); } }catch(e){}
 }
 
 /* ---------- Firebase: carrega sob demanda (sem internet o app segue local) ---------- */
@@ -1985,8 +2006,9 @@ function fbLoad(){
 }
 function onUser(u){
   user=u||null; if(unsub){ unsub(); unsub=null; } docRef=null; pendingRemote=null;
-  if(!user){ setSync("local"); refreshAcct(); renderTabs(); return; }
+  if(!user){ setSync("local"); lockApp(); return; }
   authMsg="";
+  try{ const own=localStorage.getItem(LS_OWNER); if(own&&own!==user.uid){ const d=DEFAULT(); seedCards(d); S=d; persistLocal(); } localStorage.setItem(LS_OWNER,user.uid); }catch(e){}
   const ref=fb.F.doc(fb.db,"planos",user.uid);
   const me={set:d=>fb.F.setDoc(ref,d)}; docRef=me;
   let first=true;
@@ -2003,12 +2025,12 @@ function onUser(u){
       }
       else if(rt<lt2) pushRemote();
       else setSync("synced");
-      refreshAcct(); renderTabs(); return;
+      refreshAcct(); unlockApp(); return;
     }
     if(d&&d.json&&rt>lt2){ pendingRemote=d.json; applyRemoteIfIdle(); }
     if(!writing&&!dirty) setSync("synced");
   },e=>{ setSync("local"); authMsg="Não foi possível ler a nuvem ("+((e&&e.code)||"erro")+")."; refreshAcct(); });
-  refreshAcct(); renderTabs();
+  refreshAcct(); clearTimeout(unlockT); unlockT=setTimeout(unlockApp,2500);
 }
 const AUTH_ERR={
   "auth/invalid-email":"E-mail inválido.",
@@ -2042,7 +2064,7 @@ function entrarGoogle(){
     }
   });
 }
-function lerForm(){ const em=(document.getElementById("acct-em")||{}).value||"", pw=(document.getElementById("acct-pw")||{}).value||""; return [em.trim(),pw]; }
+function lerForm(){ const em=(document.getElementById("gate-em")||{}).value||"", pw=(document.getElementById("gate-pw")||{}).value||""; return [em.trim(),pw]; }
 function entrarEmail(criar){
   const [em,pw]=lerForm();
   return withFb(f=>criar?f.A.createUserWithEmailAndPassword(f.auth,em,pw):f.A.signInWithEmailAndPassword(f.auth,em,pw));
@@ -2051,11 +2073,12 @@ function esqueciSenha(){
   const [em]=lerForm(); if(!em){ authMsg="Digite seu e-mail acima e toque de novo em “Esqueci a senha”."; refreshAcct(); return; }
   return withFb(async f=>{ await f.A.sendPasswordResetEmail(f.auth,em); toast("Enviamos um link para redefinir a senha"); });
 }
-function sair(){ return withFb(f=>f.A.signOut(f.auth)); }
+function sair(){ return withFb(async f=>{ if(docRef&&(remoteT||dirty||writing)){ clearTimeout(remoteT); try{ await docRef.set({json:JSON.stringify(S),updatedAt:S.updatedAt||Date.now()}); }catch(e){} } await f.A.signOut(f.auth); try{ localStorage.removeItem(LS); localStorage.removeItem(LS_OWNER); }catch(e){} location.reload(); }); }
 
 function acctKids(){
   const msg=authMsg?h("p",{class:"acct-msg",role:"alert",text:authMsg}):null;
   if(!FB_CONFIG.apiKey) return [h("p",{class:"lead",text:"Sincronização ainda não configurada. Tudo fica salvo só neste aparelho."})];
+  if(!user) return [h("p",{class:"lead",text:"Entre na tela inicial para sincronizar."})];
   if(user) return [
     h("p",{class:"lead",text:`Conectado como ${user.email||"sua conta"}. O que você muda aqui aparece nos outros aparelhos conectados em poucos segundos. Sem internet, continua salvando no aparelho e envia quando a conexão voltar.`}),
     h("div",{class:"backup"},h("button",{type:"button",class:"btn-ghost",disabled:authBusy||null,onclick:sair},"Sair desta conta")),
@@ -2075,8 +2098,51 @@ function acctKids(){
           h("button",{type:"button",class:"btn-ghost",disabled:authBusy||null,onclick:esqueciSenha},"Esqueci a senha")))),
     msg];
 }
+function gateKids(){
+  const msg=authMsg?h("p",{class:"acct-msg",role:"alert",text:authMsg}):null;
+  const head=[h("p",{class:"gate-brand",text:"SQPR Hunter"})];
+  if(gateState==="loading") return [...head,h("p",{class:"gate-sub",text:"Carregando…"})];
+  if(gateState==="offline") return [...head,h("h1",{text:"Sem internet"}),
+    h("p",{class:"gate-sub",text:"Conecte à internet para entrar. Depois do primeiro login o app também abre offline."}),
+    h("button",{type:"button",class:"btn",onclick:()=>{ gateState="loading"; renderGate(); bootAuth(); }},"Tentar de novo"),msg];
+  const dis=authBusy||null;
+  return [...head,
+    h("h1",{text:"Entre para ver seu plano"}),
+    h("p",{class:"gate-sub",text:"Use a mesma conta em todos os aparelhos para o plano ficar igual em todos."}),
+    h("button",{type:"button",class:"btn",disabled:dis,onclick:entrarGoogle},"Entrar com Google"),
+    h("div",{class:"gate-or",text:"ou com e-mail"}),
+    h("form",{class:"gate-form",onsubmit:e=>{ e.preventDefault(); entrarEmail(false); }},
+      h("input",{id:"gate-em",type:"email",autocomplete:"email",placeholder:"seu e-mail","aria-label":"E-mail",required:true}),
+      h("input",{id:"gate-pw",type:"password",autocomplete:"current-password",placeholder:"senha (mínimo 6 caracteres)","aria-label":"Senha",required:true}),
+      h("div",{class:"gate-row"},
+        h("button",{type:"submit",class:"btn-ghost",disabled:dis},"Entrar"),
+        h("button",{type:"button",class:"btn-ghost",disabled:dis,onclick:()=>entrarEmail(true)},"Criar conta")),
+      h("button",{type:"button",class:"gate-link",disabled:dis,onclick:esqueciSenha},"Esqueci a senha")),
+    msg];
+}
+function renderGate(){
+  const box=document.getElementById("gateBox"); if(!box||!document.body.classList.contains("locked")) return;
+  const ae=document.activeElement, keep=ae&&ae.id&&box.contains(ae)?ae.id:null;
+  const vals={}; box.querySelectorAll("input[id]").forEach(i=>vals[i.id]=i.value);
+  box.replaceChildren(...gateKids().filter(Boolean));
+  for(const [k,v] of Object.entries(vals)){ const i=document.getElementById(k); if(i) i.value=v; }
+  if(keep){ const i=document.getElementById(keep); if(i) i.focus(); }
+}
+function lockApp(){ clearTimeout(unlockT); document.body.classList.add("locked"); gateState="login"; renderGate(); }
+function unlockApp(){
+  clearTimeout(unlockT); if(!user) return;
+  document.body.classList.remove("locked");
+  if(!started) startApp(); else { renderHero(); renderFoot(); render(); }
+  refreshAcct();
+}
+function bootAuth(){
+  if(!FB_CONFIG.apiKey){ document.body.classList.remove("locked"); startApp(); return; }
+  fbLoad().then(f=>{ if(!f){ document.body.classList.remove("locked"); startApp(); } })
+    .catch(()=>{ gateState="offline"; renderGate(); });
+}
 function SyncSec(){ return Sec(h("h2",{text:"Sincronização entre aparelhos"}),h("div",{id:"acct"},...acctKids())); }
 function refreshAcct(){
+  renderGate();
   const el=document.getElementById("acct"); if(!el) return;
   const ae=document.activeElement, keep=ae&&ae.id&&el.contains(ae)?ae.id:null;
   const vals={}; el.querySelectorAll("input[id]").forEach(i=>vals[i.id]=i.value);
@@ -2086,19 +2152,23 @@ function refreshAcct(){
   if(open){ const d=el.querySelector("details"); if(d) d.open=true; }
   if(keep){ const i=document.getElementById(keep); if(i) i.focus(); }
 }
-window.addEventListener("online",()=>{ if(docRef) pushRemote(); else fbLoad().catch(()=>{}); });
+window.addEventListener("online",()=>{ if(docRef) pushRemote(); else if(!fb){ gateState="loading"; renderGate(); bootAuth(); } });
 window.addEventListener("offline",()=>{ if(docRef) setSync("offline"); });
 document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="hidden"&&docRef&&(remoteT||dirty)){ clearTimeout(remoteT); remoteT=null; pushRemote(); } });
-fbLoad().catch(()=>{});
+
 
 /* ===================== INICIAR ===================== */
-pruneChecks();
-buildScene();
-renderHero();
-renderFoot();
-render();
-document.getElementById("hero").dataset.phase=phaseFor();
-setInterval(tickHero,60000);
+function startApp(){
+  if(started) return; started=true;
+  pruneChecks();
+  buildScene();
+  renderHero();
+  renderFoot();
+  render();
+  document.getElementById("hero").dataset.phase=phaseFor();
+  setInterval(tickHero,60000);
+}
+bootAuth();
 document.addEventListener("keydown",e=>{ if(e.key==="Escape"&&openTask&&!editing()) closeT(); });
 window.addEventListener("hashchange",()=>{ const k=location.hash.replace("#",""); if(VIEWS[k]&&k!==view){ view=k; render(); } });
 

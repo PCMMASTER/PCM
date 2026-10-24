@@ -1,7 +1,7 @@
 /* SQPR Hunter — service worker
    Ao publicar uma versão nova do index.html, troque o número abaixo (v1 -> v2…)
    para o app avisar "Nova versão disponível". */
-const VERSAO = "sqpr-v2";
+const VERSAO = "sqpr-v3";
 const ARQUIVOS = [
   "./",
   "./index.html",
@@ -12,7 +12,7 @@ const ARQUIVOS = [
   "./icons/maskable-512.png",
   "./icons/favicon-64.png"
 ];
-const FONTES = /^https:\/\/fonts\.(googleapis|gstatic)\.com\//;
+const FONTES = /^https:\/\/(fonts\.(googleapis|gstatic)\.com|www\.gstatic\.com\/firebasejs)\//;
 
 self.addEventListener("install", e => {
   e.waitUntil(caches.open(VERSAO).then(c => c.addAll(ARQUIVOS)));
@@ -43,7 +43,7 @@ self.addEventListener("fetch", e => {
     return;
   }
 
-  // Fonte Archivo (Google Fonts): guarda depois do primeiro uso para funcionar offline.
+  // Fonte Archivo e biblioteca do login (Firebase): guarda depois do primeiro uso para funcionar offline.
   if (FONTES.test(req.url)) {
     e.respondWith(
       caches.open(VERSAO).then(ca => ca.match(req).then(hit => {
